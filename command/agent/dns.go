@@ -79,8 +79,13 @@ func NewDNSServer(agent *Agent, config *DNSConfig, logOutput io.Writer, domain s
 		logger:       log.New(logOutput, "", log.LstdFlags),
 	}
 
-	// Register mux handler, for reverse lookup
-	mux.HandleFunc("arpa.", srv.handlePtr)
+	if config.DisableReverseLookup {
+		srv.logger.Println("[DEBUG] dns: reverse lookup disabled, will fall through to recursors")
+	} else {
+		// Register mux handler, for reverse lookup
+		srv.logger.Println("[DEBUG] dns: adding arpa handler for reverse lookup to consul node addresses")
+		mux.HandleFunc("arpa.", srv.handlePtr)
+	}
 
 	// Register mux handlers
 	mux.HandleFunc(domain, srv.handleQuery)

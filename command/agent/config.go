@@ -88,6 +88,11 @@ type DNSConfig struct {
 	// whose health checks are in any non-passing state. By
 	// default, only nodes in a critical state are excluded.
 	OnlyPassing bool `mapstructure:"only_passing"`
+
+	// DisableReverseLookup is used to turn off reverse lookup resolving
+	// to consul addresses. If set to true, reverse lookup will be passed
+	// on to recursed nameservers. See DNSRecursors setting.
+	DisableReverseLookup bool `mapstructure:"disable_reverse_lookup"`
 }
 
 // Config is the configuration that can be set for an Agent.
@@ -999,6 +1004,9 @@ func MergeConfig(a, b *Config) *Config {
 	if b.DNSConfig.OnlyPassing {
 		result.DNSConfig.OnlyPassing = true
 	}
+	if b.DNSConfig.DisableReverseLookup {
+		result.DNSConfig.OnlyPassing = true
+	}
 	if b.CheckUpdateIntervalRaw != "" || b.CheckUpdateInterval != 0 {
 		result.CheckUpdateInterval = b.CheckUpdateInterval
 	}
@@ -1033,9 +1041,9 @@ func MergeConfig(a, b *Config) *Config {
 	if b.DisableRemoteExec {
 		result.DisableRemoteExec = true
 	}
-	if b.DisableUpdateCheck {
-		result.DisableUpdateCheck = true
-	}
+//	if b.DisableUpdateCheck {
+//		result.DisableUpdateCheck = true
+//	}
 	if b.DisableAnonymousSignature {
 		result.DisableAnonymousSignature = true
 	}

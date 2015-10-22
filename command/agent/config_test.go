@@ -690,6 +690,17 @@ func TestDecodeConfig(t *testing.T) {
 		t.Fatalf("bad: %#v", config)
 	}
 
+	// Disable DNS Reverse Lookup
+	input = `{"dns_config": {"disable_reverse_lookup": true}}`
+	config, err = DecodeConfig(bytes.NewReader([]byte(input)))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !config.DNSConfig.DisableReverseLookup {
+		t.Fatalf("bad: %#v", config)
+	}
+
 	// HTTP API response header fields
 	input = `{"http_api_response_headers": {"Access-Control-Allow-Origin": "*", "X-XSS-Protection": "1; mode=block"}}`
 	config, err = DecodeConfig(bytes.NewReader([]byte(input)))
