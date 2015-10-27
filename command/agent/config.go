@@ -1032,7 +1032,7 @@ func MergeConfig(a, b *Config) *Config {
 		result.DNSConfig.OnlyPassing = true
 	}
 	if b.DNSConfig.DisableReverseLookup {
-		result.DNSConfig.OnlyPassing = true
+		result.DNSConfig.DisableReverseLookup = true
 	}
 	if b.CheckUpdateIntervalRaw != "" || b.CheckUpdateInterval != 0 {
 		result.CheckUpdateInterval = b.CheckUpdateInterval
@@ -1068,9 +1068,9 @@ func MergeConfig(a, b *Config) *Config {
 	if b.DisableRemoteExec {
 		result.DisableRemoteExec = true
 	}
-//	if b.DisableUpdateCheck {
-//		result.DisableUpdateCheck = true
-//	}
+	if b.DisableUpdateCheck {
+		result.DisableUpdateCheck = true
+	}
 	if b.DisableAnonymousSignature {
 		result.DisableAnonymousSignature = true
 	}

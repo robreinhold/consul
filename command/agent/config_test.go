@@ -1162,6 +1162,7 @@ func TestMergeConfig(t *testing.T) {
 			AllowStale:     true,
 			MaxStale:       30 * time.Second,
 			EnableTruncate: true,
+			DisableReverseLookup: true,
 		},
 		Domain:           "other",
 		LogLevel:         "info",
