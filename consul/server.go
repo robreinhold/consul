@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/acl"
+	"github.com/hashicorp/consul/consul/state"
 	"github.com/hashicorp/consul/tlsutil"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
+	"github.com/hashicorp/serf/coordinate"
 	"github.com/hashicorp/serf/serf"
 )
 
@@ -26,14 +28,21 @@ import (
 // protocol versions.
 const (
 	ProtocolVersionMin uint8 = 1
-	ProtocolVersionMax       = 2
+
+	// Version 3 added support for network coordinates but we kept the
+	// default protocol version at 2 to ease the transition to this new
+	// feature. A Consul agent speaking version 2 of the protocol will
+	// attempt to send its coordinates to a server who understands version
+	// 3 or greater.
+	ProtocolVersion2Compatible = 2
+
+	ProtocolVersionMax = 3
 )
 
 const (
 	serfLANSnapshot   = "serf/local.snapshot"
 	serfWANSnapshot   = "serf/remote.snapshot"
 	raftState         = "raft/"
-	tmpStatePath      = "tmp/"
 	snapshotsRetained = 2
 
 	// serverRPCCache controls how long we keep an idle connection
@@ -135,7 +144,7 @@ type Server struct {
 
 	// tombstoneGC is used to track the pending GC invocations
 	// for the KV tombstones
-	tombstoneGC *TombstoneGC
+	tombstoneGC *state.TombstoneGC
 
 	shutdown     bool
 	shutdownCh   chan struct{}
@@ -144,13 +153,14 @@ type Server struct {
 
 // Holds the RPC endpoints
 type endpoints struct {
-	Catalog  *Catalog
-	Health   *Health
-	Status   *Status
-	KVS      *KVS
-	Session  *Session
-	Internal *Internal
-	ACL      *ACL
+	Catalog    *Catalog
+	Health     *Health
+	Status     *Status
+	KVS        *KVS
+	Session    *Session
+	Internal   *Internal
+	ACL        *ACL
+	Coordinate *Coordinate
 }
 
 // NewServer is used to construct a new Consul server from the
@@ -193,7 +203,7 @@ func NewServer(config *Config) (*Server, error) {
 	logger := log.New(config.LogOutput, "", log.LstdFlags)
 
 	// Create the tombstone GC
-	gc, err := NewTombstoneGC(config.TombstoneTTL, config.TombstoneTTLGranularity)
+	gc, err := state.NewTombstoneGC(config.TombstoneTTL, config.TombstoneTTLGranularity)
 	if err != nil {
 		return nil, err
 	}
@@ -306,6 +316,10 @@ func (s *Server) setupSerf(conf *serf.Config, ch chan serf.Event, path string, w
 	if err := ensurePath(conf.SnapshotPath, false); err != nil {
 		return nil, err
 	}
+
+	// Plumb down the enable coordinates flag.
+	conf.DisableCoordinates = s.config.DisableCoordinates
+
 	return serf.Create(conf)
 }
 
@@ -316,18 +330,9 @@ func (s *Server) setupRaft() error {
 		s.config.RaftConfig.EnableSingleNode = true
 	}
 
-	// Create the base state path
-	statePath := filepath.Join(s.config.DataDir, tmpStatePath)
-	if err := os.RemoveAll(statePath); err != nil {
-		return err
-	}
-	if err := ensurePath(statePath, true); err != nil {
-		return err
-	}
-
 	// Create the FSM
 	var err error
-	s.fsm, err = NewFSM(s.tombstoneGC, statePath, s.config.LogOutput)
+	s.fsm, err = NewFSM(s.tombstoneGC, s.config.LogOutput)
 	if err != nil {
 		return err
 	}
@@ -405,6 +410,7 @@ func (s *Server) setupRPC(tlsWrap tlsutil.DCWrapper) error {
 	s.endpoints.Session = &Session{s}
 	s.endpoints.Internal = &Internal{s}
 	s.endpoints.ACL = &ACL{s}
+	s.endpoints.Coordinate = NewCoordinate(s)
 
 	// Register the handlers
 	s.rpcServer.Register(s.endpoints.Status)
@@ -414,6 +420,7 @@ func (s *Server) setupRPC(tlsWrap tlsutil.DCWrapper) error {
 	s.rpcServer.Register(s.endpoints.Session)
 	s.rpcServer.Register(s.endpoints.Internal)
 	s.rpcServer.Register(s.endpoints.ACL)
+	s.rpcServer.Register(s.endpoints.Coordinate)
 
 	list, err := net.ListenTCP("tcp", s.config.RPCAddr)
 	if err != nil {
@@ -489,11 +496,6 @@ func (s *Server) Shutdown() error {
 
 	// Close the connection pool
 	s.connPool.Shutdown()
-
-	// Close the fsm
-	if s.fsm != nil {
-		s.fsm.Close()
-	}
 
 	return nil
 }
@@ -703,4 +705,14 @@ func (s *Server) Stats() map[string]map[string]string {
 		"runtime":  runtimeStats(),
 	}
 	return stats
+}
+
+// GetLANCoordinate returns the coordinate of the server in the LAN gossip pool.
+func (s *Server) GetLANCoordinate() (*coordinate.Coordinate, error) {
+	return s.serfLAN.GetCoordinate()
+}
+
+// GetWANCoordinate returns the coordinate of the server in the WAN gossip pool.
+func (s *Server) GetWANCoordinate() (*coordinate.Coordinate, error) {
+	return s.serfWAN.GetCoordinate()
 }

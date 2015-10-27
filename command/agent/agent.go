@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/consul"
+	"github.com/hashicorp/consul/consul/state"
 	"github.com/hashicorp/consul/consul/structs"
+	"github.com/hashicorp/serf/coordinate"
 	"github.com/hashicorp/serf/serf"
 )
 
@@ -81,6 +83,9 @@ type Agent struct {
 	// checkTTLs maps the check ID to an associated check TTL
 	checkTTLs map[string]*CheckTTL
 
+	// checkDockers maps the check ID to an associated Docker Exec based check
+	checkDockers map[string]*CheckDocker
+
 	// checkLock protects updates to the check* maps
 	checkLock sync.Mutex
 
@@ -94,7 +99,7 @@ type Agent struct {
 	eventBuf    []*UserEvent
 	eventIndex  int
 	eventLock   sync.RWMutex
-	eventNotify consul.NotifyGroup
+	eventNotify state.NotifyGroup
 
 	shutdown     bool
 	shutdownCh   chan struct{}
@@ -149,6 +154,7 @@ func Create(config *Config, logOutput io.Writer) (*Agent, error) {
 		checkTTLs:     make(map[string]*CheckTTL),
 		checkHTTPs:    make(map[string]*CheckHTTP),
 		checkTCPs:     make(map[string]*CheckTCP),
+		checkDockers:  make(map[string]*CheckDocker),
 		eventCh:       make(chan serf.UserEvent, 1024),
 		eventBuf:      make([]*UserEvent, 256),
 		shutdownCh:    make(chan struct{}),
@@ -189,6 +195,11 @@ func Create(config *Config, logOutput io.Writer) (*Agent, error) {
 
 	// Start handling events
 	go agent.handleEvents()
+
+	// Start sending network coordinate to the server.
+	if !config.DisableCoordinates {
+		go agent.sendCoordinate()
+	}
 
 	// Write out the PID file if necessary
 	err = agent.storePid()
@@ -538,6 +549,22 @@ func (a *Agent) WANMembers() []serf.Member {
 	}
 }
 
+// CanServersUnderstandProtocol checks to see if all the servers understand the
+// given protocol version.
+func (a *Agent) CanServersUnderstandProtocol(version uint8) bool {
+	numServers, numWhoGrok := 0, 0
+	members := a.LANMembers()
+	for _, member := range members {
+		if member.Tags["role"] == "consul" {
+			numServers++
+			if member.ProtocolMax >= version {
+				numWhoGrok++
+			}
+		}
+	}
+	return (numServers > 0) && (numWhoGrok == numServers)
+}
+
 // StartSync is called once Services and Checks are registered.
 // This is called to prevent a race between clients and the anti-entropy routines
 func (a *Agent) StartSync() {
@@ -553,6 +580,58 @@ func (a *Agent) PauseSync() {
 // ResumeSync is used to unpause anti-entropy after bulk changes are make
 func (a *Agent) ResumeSync() {
 	a.state.Resume()
+}
+
+// Returns the coordinate of this node in the local pool (assumes coordinates
+// are enabled, so check that before calling).
+func (a *Agent) GetCoordinate() (*coordinate.Coordinate, error) {
+	if a.config.Server {
+		return a.server.GetLANCoordinate()
+	} else {
+		return a.client.GetCoordinate()
+	}
+}
+
+// sendCoordinate is a long-running loop that periodically sends our coordinate
+// to the server. Closing the agent's shutdownChannel will cause this to exit.
+func (a *Agent) sendCoordinate() {
+	for {
+		rate := a.config.SyncCoordinateRateTarget
+		min := a.config.SyncCoordinateIntervalMin
+		intv := rateScaledInterval(rate, min, len(a.LANMembers()))
+		intv = intv + randomStagger(intv)
+
+		select {
+		case <-time.After(intv):
+			if !a.CanServersUnderstandProtocol(3) {
+				continue
+			}
+
+			var c *coordinate.Coordinate
+			var err error
+			if c, err = a.GetCoordinate(); err != nil {
+				a.logger.Printf("[ERR] agent: failed to get coordinate: %s", err)
+				continue
+			}
+
+			// TODO - Consider adding a distance check so we don't send
+			// an update if the position hasn't changed by more than a
+			// threshold.
+			req := structs.CoordinateUpdateRequest{
+				Datacenter:   a.config.Datacenter,
+				Node:         a.config.NodeName,
+				Coord:        c,
+				WriteRequest: structs.WriteRequest{Token: a.config.ACLToken},
+			}
+			var reply struct{}
+			if err := a.RPC("Coordinate.Update", &req, &reply); err != nil {
+				a.logger.Printf("[ERR] agent: coordinate update error: %s", err)
+				continue
+			}
+		case <-a.shutdownCh:
+			return
+		}
+	}
 }
 
 // persistService saves a service definition to a JSON file in the data dir
@@ -830,7 +909,31 @@ func (a *Agent) AddCheck(check *structs.HealthCheck, chkType *CheckType, persist
 			tcp.Start()
 			a.checkTCPs[check.CheckID] = tcp
 
-		} else {
+		} else if chkType.IsDocker() {
+			if existing, ok := a.checkDockers[check.CheckID]; ok {
+				existing.Stop()
+			}
+			if chkType.Interval < MinInterval {
+				a.logger.Println(fmt.Sprintf("[WARN] agent: check '%s' has interval below minimum of %v",
+					check.CheckID, MinInterval))
+				chkType.Interval = MinInterval
+			}
+
+			dockerCheck := &CheckDocker{
+				Notify:            &a.state,
+				CheckID:           check.CheckID,
+				DockerContainerId: chkType.DockerContainerId,
+				Shell:             chkType.Shell,
+				Script:            chkType.Script,
+				Interval:          chkType.Interval,
+				Logger:            a.logger,
+			}
+			if err := dockerCheck.Init(); err != nil {
+				return err
+			}
+			dockerCheck.Start()
+			a.checkDockers[check.CheckID] = dockerCheck
+		} else if chkType.IsMonitor() {
 			if existing, ok := a.checkMonitors[check.CheckID]; ok {
 				existing.Stop()
 			}
@@ -849,6 +952,8 @@ func (a *Agent) AddCheck(check *structs.HealthCheck, chkType *CheckType, persist
 			}
 			monitor.Start()
 			a.checkMonitors[check.CheckID] = monitor
+		} else {
+			return fmt.Errorf("Check type is not valid")
 		}
 	}
 

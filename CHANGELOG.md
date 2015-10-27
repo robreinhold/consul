@@ -16,10 +16,19 @@ IMPROVEMENTS:
 * Advertised gossip/rpc addresses can now be configured [GH-1004]
 * Atlas integration options are reload-able via SIGHUP [GH-1199]
 * Atlas endpoint is a configurable option and CLI arg [GH-1201]
+* Switched to net-rpc-msgpackrpc to reduce RPC overhead [GH-1307]
 
 MISC:
 
 * Vagrantfile fixed for VMware [GH-1042]
+* Data migrator utility removed to reduce cgo dependency. [GH-1309]
+
+UPGRADE NOTES:
+
+* Consul will refuse to start if the data directory contains an "mdb" folder.
+  This folder was used in versions of Consul up to 0.5.1. Consul version 0.5.2
+  included a baked-in utility to automatically upgrade the data format, but
+  this has been removed in Consul 0.6 to reduce the dependency on cgo.
 
 ## 0.5.2 (May 18, 2015)
 

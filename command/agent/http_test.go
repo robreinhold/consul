@@ -20,6 +20,7 @@ import (
 
 	"github.com/hashicorp/consul/consul/structs"
 	"github.com/hashicorp/consul/testutil"
+	"github.com/hashicorp/go-cleanhttp"
 )
 
 func makeHTTPServer(t *testing.T) (string, *HTTPServer) {
@@ -95,12 +96,12 @@ func TestHTTPServer_UnixSocket(t *testing.T) {
 
 	// Ensure we can get a response from the socket.
 	path, _ := unixSocketAddr(srv.agent.config.Addresses.HTTP)
+	trans := cleanhttp.DefaultTransport()
+	trans.Dial = func(_, _ string) (net.Conn, error) {
+		return net.Dial("unix", path)
+	}
 	client := &http.Client{
-		Transport: &http.Transport{
-			Dial: func(_, _ string) (net.Conn, error) {
-				return net.Dial("unix", path)
-			},
-		},
+		Transport: trans,
 	}
 
 	// This URL doesn't look like it makes sense, but the scheme (http://) and
@@ -336,6 +337,63 @@ func testPrettyPrint(pretty string, t *testing.T) {
 	}
 }
 
+func TestParseSource(t *testing.T) {
+	dir, srv := makeHTTPServer(t)
+	defer os.RemoveAll(dir)
+	defer srv.Shutdown()
+	defer srv.agent.Shutdown()
+
+	// Default is agent's DC and no node (since the user didn't care, then
+	// just give them the cheapest possible query).
+	req, err := http.NewRequest("GET",
+		"/v1/catalog/nodes", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	source := structs.QuerySource{}
+	srv.parseSource(req, &source)
+	if source.Datacenter != "dc1" || source.Node != "" {
+		t.Fatalf("bad: %v", source)
+	}
+
+	// Adding the source parameter should set that node.
+	req, err = http.NewRequest("GET",
+		"/v1/catalog/nodes?near=bob", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	source = structs.QuerySource{}
+	srv.parseSource(req, &source)
+	if source.Datacenter != "dc1" || source.Node != "bob" {
+		t.Fatalf("bad: %v", source)
+	}
+
+	// We should follow whatever dc parameter was given so that the node is
+	// looked up correctly on the receiving end.
+	req, err = http.NewRequest("GET",
+		"/v1/catalog/nodes?near=bob&dc=foo", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	source = structs.QuerySource{}
+	srv.parseSource(req, &source)
+	if source.Datacenter != "foo" || source.Node != "bob" {
+		t.Fatalf("bad: %v", source)
+	}
+
+	// The magic "_agent" node name will use the agent's local node name.
+	req, err = http.NewRequest("GET",
+		"/v1/catalog/nodes?near=_agent", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	source = structs.QuerySource{}
+	srv.parseSource(req, &source)
+	if source.Datacenter != "dc1" || source.Node != srv.agent.config.NodeName {
+		t.Fatalf("bad: %v", source)
+	}
+}
+
 func TestParseWait(t *testing.T) {
 	resp := httptest.NewRecorder()
 	var b structs.QueryOptions
@@ -472,6 +530,22 @@ func TestACLResolution(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
+	// Request with header token only
+	reqHeaderToken, err := http.NewRequest("GET",
+		"/v1/catalog/nodes", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	reqHeaderToken.Header.Add("X-Consul-Token", "bar")
+
+	// Request with header and querystring tokens
+	reqBothTokens, err := http.NewRequest("GET",
+		"/v1/catalog/nodes?token=baz", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	reqBothTokens.Header.Add("X-Consul-Token", "zap")
+
 	httpTest(t, func(srv *HTTPServer) {
 		// Check when no token is set
 		srv.agent.config.ACLToken = ""
@@ -511,6 +585,18 @@ func TestACLResolution(t *testing.T) {
 		// Explicit token has highest precedence
 		srv.parseToken(reqToken, &token)
 		if token != "foo" {
+			t.Fatalf("bad: %s", token)
+		}
+
+		// Header token has precedence over agent token
+		srv.parseToken(reqHeaderToken, &token)
+		if token != "bar" {
+			t.Fatalf("bad: %s", token)
+		}
+
+		// Querystring token has precendence over header and agent tokens
+		srv.parseToken(reqBothTokens, &token)
+		if token != "baz" {
 			t.Fatalf("bad: %s", token)
 		}
 	})

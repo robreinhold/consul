@@ -3,8 +3,6 @@ package agent
 import (
 	"bytes"
 	"fmt"
-	"github.com/hashicorp/consul/consul/structs"
-	"github.com/hashicorp/consul/testutil"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -13,6 +11,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/hashicorp/consul/consul/structs"
+	"github.com/hashicorp/consul/testutil"
+	"github.com/hashicorp/go-cleanhttp"
 )
 
 func TestUiIndex(t *testing.T) {
@@ -36,7 +38,8 @@ func TestUiIndex(t *testing.T) {
 	req.URL.Host = srv.listener.Addr().String()
 
 	// Make the request
-	resp, err := http.DefaultClient.Do(req)
+	client := cleanhttp.DefaultClient()
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

@@ -745,6 +745,17 @@ func TestDecodeConfig(t *testing.T) {
 		t.Fatalf("bad: %#v", config)
 	}
 
+	// Coordinate disable
+	input = `{"disable_coordinates": true}`
+	config, err = DecodeConfig(bytes.NewReader([]byte(input)))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if config.DisableCoordinates != true {
+		t.Fatalf("bad: coordinates not disabled: %#v", config)
+	}
+
 	// SessionTTLMin
 	input = `{"session_ttl_min": "5s"}`
 	config, err = DecodeConfig(bytes.NewReader([]byte(input)))
@@ -1072,7 +1083,7 @@ func TestDecodeConfig_Service(t *testing.T) {
 
 func TestDecodeConfig_Check(t *testing.T) {
 	// Basics
-	input := `{"check": {"id": "chk1", "name": "mem", "notes": "foobar", "script": "/bin/check_redis", "interval": "10s", "ttl": "15s" }}`
+	input := `{"check": {"id": "chk1", "name": "mem", "notes": "foobar", "script": "/bin/check_redis", "interval": "10s", "ttl": "15s", "shell": "/bin/bash", "docker_container_id": "redis" }}`
 	config, err := DecodeConfig(bytes.NewReader([]byte(input)))
 	if err != nil {
 		t.Fatalf("err: %s", err)
@@ -1104,6 +1115,14 @@ func TestDecodeConfig_Check(t *testing.T) {
 	}
 
 	if chk.TTL != 15*time.Second {
+		t.Fatalf("bad: %v", chk)
+	}
+
+	if chk.Shell != "/bin/bash" {
+		t.Fatalf("bad: %v", chk)
+	}
+
+	if chk.DockerContainerId != "redis" {
 		t.Fatalf("bad: %v", chk)
 	}
 }

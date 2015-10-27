@@ -21,7 +21,7 @@ _cgo_export.*
 
 _testmain.go
 
-/dist
+/pkg
 *.exe
 *.test
 bin/
@@ -41,5 +41,8 @@ ui/dist/
 
 website/.bundle
 website/vendor
+
+ui/.bundle
+ui/vendor
 
 *.iml
